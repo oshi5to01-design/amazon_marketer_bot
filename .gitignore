@@ -1,0 +1,5 @@
+.env
+*.png
+chrome_profile/
+__pycache__/
+.mypy_cache/
