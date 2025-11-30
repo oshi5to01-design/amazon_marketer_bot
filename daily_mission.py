@@ -3,7 +3,7 @@ import os
 import random
 import tweepy
 from dotenv import load_dotenv
-import amazon_hunter_core  # さっき作った親玉を読み込む
+import amazon_hunter_core
 
 # ==========================================
 # ⚙️ 設定 & 準備
@@ -47,7 +47,6 @@ def main():
 
     # 1. 各ミッションを順番に実行
     for mission in MISSIONS:
-        # 親玉を呼び出して、結果を直接受け取る！
         result = amazon_hunter_core.run_mission(mission["url"], mission["tag"])
 
         if result:
