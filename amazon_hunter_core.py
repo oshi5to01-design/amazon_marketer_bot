@@ -26,18 +26,15 @@ if not AMAZON_TAG:
 # 🛠️ 便利なツール関数（内部用）
 # ==========================================
 def _clean_number(text):
-    """文字から数字だけを抜き出す（内部関数）"""
+    """文字から数字だけを抜き出す（正規表現版）"""
     if not text:
         return 0
-    cleaned = (
-        text.strip()
-        .replace("¥", "")
-        .replace(",", "")
-        .replace("￥", "")
-        .replace(".", "")
-    )
-    cleaned = cleaned.replace("-", "").replace("%", "")
-    if cleaned.isdigit():
+
+    # \D は「数字じゃないもの全部」という意味
+    # 数字以外を空文字に置換して消してしまう
+    cleaned = re.sub(r"\D", "", str(text))
+
+    if cleaned:
         return int(cleaned)
     return 0
 
