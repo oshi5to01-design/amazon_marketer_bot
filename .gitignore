@@ -3,3 +3,4 @@
 chrome_profile/
 __pycache__/
 .mypy_cache/
+.pytest_cashe

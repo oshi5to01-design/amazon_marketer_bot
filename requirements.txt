@@ -1,0 +1,5 @@
+undetected-chromedriver
+beautifulsoup4
+pyvirtualdisplay
+python-dotenv
+tweepy

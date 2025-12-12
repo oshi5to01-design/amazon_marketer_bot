@@ -30,8 +30,6 @@ def _clean_number(text):
     if not text:
         return 0
 
-    # \D は「数字じゃないもの全部」という意味
-    # 数字以外を空文字に置換して消してしまう
     cleaned = re.sub(r"\D", "", str(text))
 
     if cleaned:
