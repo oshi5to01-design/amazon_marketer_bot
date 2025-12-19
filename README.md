@@ -54,3 +54,6 @@ Xのアルゴリズムを考慮し、インプレッション（表示回数）�
     Gemini API Key
 4. 実行
     python daily_mission.py
+
+
+#　あれ、、、おかしい、、、どうして、、、Geminiがいつからかいなくなってる。。。
