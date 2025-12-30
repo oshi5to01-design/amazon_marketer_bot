@@ -1,12 +1,14 @@
-# amazon_hunter_core.py
-import time
+import json
+import os
 import random
 import re
-import os
 import sys
-from dotenv import load_dotenv
+import time
+
+import google.generativeai as genai
 import undetected_chromedriver as uc
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from pyvirtualdisplay import Display
 
 # ==========================================
@@ -15,28 +17,23 @@ from pyvirtualdisplay import Display
 load_dotenv()
 
 AMAZON_TAG = os.getenv("AMAZON_TAG")
-CHECK_LIMIT = 11
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+CHECK_LIMIT = 5
 
-# タグ設定チェック
+# 設定チェック
 if not AMAZON_TAG:
     print("⚠️ 警告: .envファイルに AMAZON_TAG が設定されていません！")
+if not GEMINI_API_KEY:
+    print("❌ エラー: .envファイルに GEMINI_API_KEY が設定されていません！")
+    sys.exit(1)  # キーがないと動かないので終了
+
+# Geminiの設定
+genai.configure(api_key=GEMINI_API_KEY)
 
 
 # ==========================================
-# 🛠️ 便利なツール関数（内部用）
+# 🛠️ 便利なツール関数
 # ==========================================
-def _clean_number(text):
-    """文字から数字だけを抜き出す（正規表現版）"""
-    if not text:
-        return 0
-
-    cleaned = re.sub(r"\D", "", str(text))
-
-    if cleaned:
-        return int(cleaned)
-    return 0
-
-
 def _setup_driver():
     """Chromeドライバーの設定"""
     options = uc.ChromeOptions()
@@ -48,58 +45,93 @@ def _setup_driver():
     return driver
 
 
-def _extract_price_info(soup):
-    """価格と割引率を抽出する"""
-    info = {"price": 0, "original_price": 0, "discount": 0}
+def _analyze_html_with_gemini(html_content):
+    """
+    HTMLをGeminiに渡して、商品情報を抽出する関数
+    """
+    try:
+        # 1. HTMLを軽量化する（トークン節約のため）
+        soup = BeautifulSoup(html_content, "html.parser")
 
-    # 1. 現在価格
-    price_selectors = [
-        "#corePriceDisplay_desktop_feature_div .a-price-whole",
-        "#corePrice_feature_div .a-price-whole",
-        ".a-price .a-price-whole",
-    ]
-    for sel in price_selectors:
-        tag = soup.select_one(sel)
-        if tag:
-            price = _clean_number(tag.text)
-            if price > 0:
-                info["price"] = price
-                break
+        # scriptやstyleタグはノイズになるので削除
+        for script in soup(["script", "style", "noscript", "iframe"]):
+            script.decompose()
 
-    # 2. 割引率
-    discount_tag = soup.select_one(".savingsPercentage")
-    if discount_tag:
-        info["discount"] = _clean_number(discount_tag.text)
+        # テキストのみを抽出（HTMLタグそのままだと重すぎる場合があるため）
+        # ただし、構造が必要な場合は str(soup) でも良いが、今回はテキストベースで試す
+        # Amazonは情報量が多いので、body内のメインコンテンツに絞ると精度が上がる
+        main_content = soup.find("div", {"id": "dp"})  # 商品ページの大枠
+        if not main_content:
+            main_content = soup.body
 
-    # 3. 参考価格
-    original_selectors = [
-        "span.a-price.a-text-price span.a-offscreen",
-        ".basisPrice span.a-offscreen",
-    ]
-    for sel in original_selectors:
-        tag = soup.select_one(sel)
-        if tag:
-            original = _clean_number(tag.text)
-            if original > 0:
-                info["original_price"] = original
-                break
+        # テキスト化して空白を整理
+        clean_text = main_content.get_text(separator="\n", strip=True)
 
-    return info
+        # 文字数が多すぎるとエラーになるので、先頭からある程度で切る（価格情報は上の方にあるはず）
+        # Gemini 1.5 Flashならかなり長くてもいけるが、念のため
+        input_text = clean_text[:30000]
+
+        # 2. モデルの準備
+        model = genai.GenerativeModel("models/gemini-flash-latest")
+
+        # 3. プロンプト（命令文）
+        prompt = (
+            """
+        あなたはAmazonの商品ページの解析AIです。
+        以下のテキストデータから、この商品の情報を抽出してください。
+
+        【抽出項目】
+        1. name: 商品名（具体的かつ簡潔に）
+        2. price: 現在の販売価格（数値のみ。円マークやカンマは削除）
+        3. original: 参考価格または元値（数値のみ。見つからない場合は 0）
+        4. discount: 割引率（数値のみ。%は削除。見つからない場合は 0）
+
+        【出力形式】
+        必ず以下のJSON形式のみを出力してください。Markdown記法（```json）は不要です。
+        {
+            "name": "商品名",
+            "price": 1000,
+            "original": 1200,
+            "discount": 20
+        }
+        
+        【対象テキスト】
+        """
+            + input_text
+        )
+
+        # 4. AIに聞く
+        response = model.generate_content(prompt)
+        text = response.text
+
+        # JSON形式の文字列を探して取り出す
+        clean_json_text = text.replace("```json", "").replace("```", "").strip()
+
+        # 辞書データに変換
+        result = json.loads(clean_json_text)
+
+        # 型の安全対策（念のためint変換）
+        if result.get("price"):
+            result["price"] = int(result["price"])
+        if result.get("original"):
+            result["original"] = int(result["original"])
+        if result.get("discount"):
+            result["discount"] = int(result["discount"])
+
+        return result
+
+    except Exception as e:
+        print(f"   ❌ AI解析エラー: {e}")
+        return None
 
 
 # ==========================================
 # 🚀 メインミッション実行関数
 # ==========================================
 def run_mission(ranking_url, category_tag):
-    """
-    子分からURLとタグを受け取って、スクレイピングを実行する関数。
-    一番良い商品のデータを辞書形式で返す（return）。
-    見つからなかった場合は None を返す。
-    """
     print(f"\n🚀 ミッション開始: {category_tag}")
     print(f"Target: {ranking_url}")
 
-    # 仮想ディスプレイの起動
     display = Display(visible=0, size=(1920, 1080))
     display.start()
     print("🖥️ 仮想ディスプレイを起動しました")
@@ -111,7 +143,7 @@ def run_mission(ranking_url, category_tag):
 
         # 1. ランキング取得
         driver.get(ranking_url)
-        time.sleep(random.uniform(5, 8))
+        time.sleep(random.uniform(10, 15))
 
         soup_ranking = BeautifulSoup(driver.page_source, "html.parser")
         all_links = soup_ranking.find_all("a", href=True)
@@ -143,33 +175,34 @@ def run_mission(ranking_url, category_tag):
 
         for i, asin in enumerate(target_asins):
             url = f"https://www.amazon.co.jp/dp/{asin}"
-            print(f"[{i+1}/{len(target_asins)}] 🔎 ASIN: {asin} を調査中...")
+            print(f"[{i + 1}/{len(target_asins)}] 🔎 ASIN: {asin} を調査中...")
 
             try:
                 driver.get(url)
                 time.sleep(random.uniform(6, 10))
 
-                soup_item = BeautifulSoup(driver.page_source, "html.parser")
+                # ページソースをAIに渡す
+                html_content = driver.page_source
 
-                title_tag = soup_item.select_one("#productTitle")
-                title = title_tag.text.strip() if title_tag else "商品名不明"
+                # ★ここでGeminiを呼び出す！
+                info = _analyze_html_with_gemini(html_content)
 
-                info = _extract_price_info(soup_item)
-
-                if info["price"] > 0:
-                    print(f"   💰 {info['price']:,}円 (割引: {info['discount']}%)")
+                if info and info.get("price", 0) > 0:
+                    print(
+                        f"   💰 {info['price']:,}円 (割引: {info['discount']}%) - {info['name'][:20]}..."
+                    )
 
                     if best_deal is None or info["discount"] > best_deal["discount"]:
                         best_deal = {
-                            "name": title,
+                            "name": info["name"],
                             "url": url,
                             "price": info["price"],
-                            "original": info["original_price"],
+                            "original": info["original"],
                             "discount": info["discount"],
                         }
                         print("   >>> 👑 暫定1位！")
                 else:
-                    print("   ❌ 価格取得失敗")
+                    print("   ❌ 価格取得失敗 (AI解析不能)")
 
             except Exception as e:
                 print(f"   ❌ 個別エラー: {e}")
@@ -182,14 +215,11 @@ def run_mission(ranking_url, category_tag):
             print(f"商品名: {best_deal['name']}")
             print(f"割引率: {best_deal['discount']}% OFF")
 
-            # アフィリエイトリンク生成
             tag_str = f"tag={AMAZON_TAG}" if AMAZON_TAG else ""
             affiliate_url = f"{best_deal['url']}?{tag_str}"
 
-            # 名前短縮
             short_name = " ".join(best_deal["name"].split()[:5])
 
-            # データを辞書にまとめる
             item_data = {
                 "name": short_name,
                 "price": best_deal["price"],
@@ -199,7 +229,6 @@ def run_mission(ranking_url, category_tag):
                 "hashtag": f"{category_tag} #Amazonセール",
             }
 
-            # ファイル保存せず、呼び出し元にデータを「返す」
             return item_data
 
         else:
@@ -222,6 +251,5 @@ def run_mission(ranking_url, category_tag):
         print("=" * 40)
 
 
-# テスト用（このファイルを直接実行した場合のみ動く）
 if __name__ == "__main__":
     print("これは親玉モジュールです。daily_mission.py から呼び出してください。")
